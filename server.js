@@ -49,4 +49,11 @@ app.post('/api/ftp/list',async(req,res)=>{
     res.json({path:current,files:result.sort((a,b)=>(a.type===b.type?0:a.type==='folder'?-1:b.type==='folder'?1:0)||a.name.localeCompare(b.name))});
   }catch(e){res.status(400).json({error:e.message});}finally{c.close();}
 });
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) app.listen(3001,'127.0.0.1',()=>console.log('FTP API on 3001'));
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+  const server=app.listen(3001,'127.0.0.1');
+  server.on('listening',()=>console.log('FTP API on 3001'));
+  server.on('error',error=>{
+    console.error(error.code==='EADDRINUSE'?'启动失败：3001 端口已被占用，请停止旧的 FTPView 实例。':error.message);
+    process.exitCode=1;
+  });
+}
