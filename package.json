@@ -11,7 +11,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "4.3.4",
     "basic-ftp": "latest",
-    "concurrently": "latest",
+    "concurrently": "8.2.2",
     "cors": "latest",
     "express": "latest",
     "lucide-react": "^0.468.0",
