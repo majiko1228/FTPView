@@ -11,7 +11,7 @@ app.get('/api/local/list',async(req,res)=>{
   try {
     const dir=path.resolve(req.query.path||os.homedir());
     const entries=await fs.readdir(dir,{withFileTypes:true});
-    const files=(await Promise.all(entries.filter(e=>!e.isSymbolicLink()).map(async e=>{
+    const files=(await Promise.all(entries.filter(e=>!e.name.startsWith('.')&&!e.isSymbolicLink()).map(async e=>{
       try {const s=await fs.stat(path.join(dir,e.name));return {name:e.name,type:s.isDirectory()?'folder':'file',size:s.size,modifiedAt:s.mtime};}catch{return null;}
     }))).filter(Boolean).sort((a,b)=>(a.type===b.type?0:a.type==='folder'?-1:1)||a.name.localeCompare(b.name));
     res.json({path:dir,files});
@@ -32,7 +32,21 @@ app.post('/api/ftp/list',async(req,res)=>{
     await c.cd(wire(remotePath));
     const current=decode(await c.pwd());
     const files=await c.list();
-    res.json({path:current,files:files.map(x=>({name:decode(x.name),type:x.isDirectory?'folder':'file',size:x.size,modifiedAt:x.modifiedAt})).sort((a,b)=>(a.type===b.type?0:a.type==='folder'?-1:1)||a.name.localeCompare(b.name))});
+    const result=[];
+    for(const x of files){
+      if(x.name==='.'||x.name==='..') continue;
+      let directory=x.isDirectory;
+      // Directory symlinks and unknown LIST types need a CWD probe.
+      if(x.isSymbolicLink||x.type===ftp.FileType.Unknown){
+        let entered=false;
+        try{await c.cd(x.name);entered=true;directory=true;}
+        catch(e){if(!(e instanceof ftp.FTPError)) throw e;}
+        // A failed restore must abort the listing to avoid probing the wrong directory.
+        if(entered) await c.cd(wire(current));
+      }
+      result.push({name:decode(x.name),type:directory?'folder':x.isSymbolicLink?'link':'file',size:x.size,modifiedAt:x.modifiedAt});
+    }
+    res.json({path:current,files:result.sort((a,b)=>(a.type===b.type?0:a.type==='folder'?-1:b.type==='folder'?1:0)||a.name.localeCompare(b.name))});
   }catch(e){res.status(400).json({error:e.message});}finally{c.close();}
 });
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) app.listen(3001,'127.0.0.1',()=>console.log('FTP API on 3001'));
