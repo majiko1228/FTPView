@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server.js",
-    "start": "concurrently \"node server.js\" \"vite --host 0.0.0.0\"",
+    "start": "concurrently --kill-others \"node server.js\" \"vite\"",
     "build": "vite build"
   },
   "dependencies": {
@@ -14,6 +14,7 @@
     "concurrently": "8.2.2",
     "cors": "latest",
     "express": "latest",
+    "iconv-lite": "^0.7.3",
     "lucide-react": "^0.468.0",
     "react": "latest",
     "react-dom": "latest",
