@@ -1,1 +1,22 @@
-{"name":"ftpview","version":"1.0.0","type":"module","scripts":{"dev":"vite","server":"node server.js","start":"concurrently \"node server.js\" \"vite --host 0.0.0.0\""},"dependencies":{"@vitejs/plugin-react":"4.3.4","basic-ftp":"latest","concurrently":"latest","cors":"latest","express":"latest","lucide-react":"latest","react":"latest","react-dom":"latest","vite":"5.4.14"}}
+{
+  "name": "ftpview",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node server.js",
+    "start": "concurrently \"node server.js\" \"vite --host 0.0.0.0\"",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "4.3.4",
+    "basic-ftp": "latest",
+    "concurrently": "latest",
+    "cors": "latest",
+    "express": "latest",
+    "lucide-react": "^0.468.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "5.4.14"
+  }
+}
