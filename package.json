@@ -5,8 +5,10 @@
   "scripts": {
     "dev": "vite",
     "server": "node server.js",
-    "start": "concurrently --kill-others \"node server.js\" \"vite\"",
-    "build": "vite build"
+    "start": "node scripts/dev.mjs",
+    "build": "vite build",
+    "restart": "node scripts/dev.mjs --restart",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.3.4",

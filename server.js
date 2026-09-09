@@ -3,7 +3,9 @@ import * as ftp from 'basic-ftp';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import iconv from 'iconv-lite';
+import {connectFTP} from './ftp-connection.js';
+import {jobs,isTransferring,transfer} from './transfers.js';
+import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 export const app=express();
 app.use(express.json());
@@ -20,15 +22,8 @@ app.get('/api/local/list',async(req,res)=>{
 app.post('/api/ftp/list',async(req,res)=>{
   const c=new ftp.Client(15000);
   try {
-    const {host,port=21,user='anonymous',password='',remotePath='/',protocol='FTP',encoding='utf8',ignoreCertificate=false}=req.body;
-    if(!host||!Number.isInteger(+port)||+port<1||+port>65535) throw new Error('请填写有效的主机和端口');
-    if(!['utf8','gbk','gb18030','big5','latin1'].includes(encoding)) throw new Error('不支持的编码');
-    if(!['FTP','FTPS','FTPS implicit'].includes(protocol)) throw new Error('不支持的协议');
-    const wire=s=>encoding==='utf8'?s:iconv.encode(s,encoding).toString('latin1');
-    const decode=s=>encoding==='utf8'?s:iconv.decode(Buffer.from(s,'latin1'),encoding);
-    c.ftp.encoding=encoding==='utf8'?'utf8':'latin1';
-    await c.access({host,port:+port,user:wire(user),password:wire(password),secure:protocol==='FTP'?false:protocol==='FTPS implicit'?'implicit':true,secureOptions:{rejectUnauthorized:!ignoreCertificate}});
-    if(encoding!=='utf8') await c.send('OPTS UTF8 OFF',true);
+    const {remotePath='/'}=req.body;
+    const {wire,decode}=await connectFTP(c,req.body);
     await c.cd(wire(remotePath));
     const current=decode(await c.pwd());
     const files=await c.list();
@@ -48,6 +43,23 @@ app.post('/api/ftp/list',async(req,res)=>{
     }
     res.json({path:current,files:result.sort((a,b)=>(a.type===b.type?0:a.type==='folder'?-1:b.type==='folder'?1:0)||a.name.localeCompare(b.name))});
   }catch(e){res.status(400).json({error:e.message});}finally{c.close();}
+});
+app.get('/api/transfers',(req,res)=>res.json({jobs:[...jobs.values()]}));
+let draining=false;
+app.post('/api/transfers',(req,res)=>{
+ if(draining)return res.status(409).json({error:'服务正在重启，请稍后重试'});
+ if(isTransferring())return res.status(409).json({error:'已有文件正在传输，请等待完成'});
+ const {name,direction}=req.body;
+ const job={id:randomUUID(),name,direction,status:'connecting',bytes:0,size:0,startedAt:Date.now()};
+ jobs.set(job.id,job);
+ if(jobs.size>100)jobs.delete(jobs.keys().next().value);
+ res.status(202).json(job);
+ void transfer(job,req.body);
+});
+app.get('/api/runtime',(req,res)=>res.json({project:process.cwd(),busy:isTransferring()}));
+app.post('/api/runtime/drain',(req,res)=>{
+ if(isTransferring())return res.status(409).json({error:'有文件正在传输或校验，请等待完成'});
+ draining=true;res.json({project:process.cwd(),busy:false});
 });
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const server=app.listen(3001,'127.0.0.1');
