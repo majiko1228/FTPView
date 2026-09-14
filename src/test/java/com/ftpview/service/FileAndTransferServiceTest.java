@@ -14,7 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 class FileAndTransferServiceTest {
     @TempDir Path dir;
 
-    /** 本机列表隐藏点文件，并拒绝删除文件夹。 */
+    /** 本机列表隐藏点文件，支持目录删除并拒绝路径穿越。 */
     @Test
     void localListingAndDeletion() throws Exception {
         FtpConnectionService connections = new FtpConnectionService();
@@ -30,7 +30,8 @@ class FileAndTransferServiceTest {
             WorkspaceRequest r = new WorkspaceRequest();
             r.path = dir.toString();
             r.name = "folder";
-            assertThrows(IOException.class, () -> controller.delete(r));
+            controller.delete(r);
+            assertFalse(Files.exists(dir.resolve("folder")));
             r.name = "../a.txt";
             assertThrows(IOException.class, () -> controller.delete(r));
             r.name = "a.txt";

@@ -8,11 +8,9 @@ import com.ftpview.dto.WorkspaceRequest;
 import com.ftpview.service.FtpSessionService.Session;
 import java.io.IOException;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -26,9 +24,18 @@ import org.springframework.stereotype.Service;
 public class FileService {
     private final FtpSessionService sessions;
     private final TransferService transfers;
+    private final FolderService folders;
 
     /** 注入会话与任务状态，目录操作不直接承担连接或传输实现。 */
     public FileService(FtpSessionService sessions, TransferService transfers) {
+        this(sessions, transfers, new FolderService());
+    }
+
+    /** 注入递归目录操作服务。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public FileService(
+            FtpSessionService sessions, TransferService transfers, FolderService folders) {
+        this.folders = folders;
         this.sessions = sessions;
         this.transfers = transfers;
     }
@@ -93,7 +100,7 @@ public class FileService {
         }
     }
 
-    /** 仅删除明确选中的普通文件，拒绝递归删除。 */
+    /** 删除明确选中的文件或完整目录树，递归预检拒绝符号链接。 */
     public void delete(WorkspaceRequest request) throws Exception {
         name(request.name);
         if (transfers.isTransferring()) {
@@ -101,10 +108,7 @@ public class FileService {
         }
         if (request.session == null) {
             Path path = Paths.get(request.path).resolve(request.name);
-            if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                throw new IOException("仅支持普通文件");
-            }
-            Files.delete(path);
+            folders.deleteLocal(path);
         } else {
             Session session = sessions.session(request.session);
             synchronized (session) {
@@ -112,20 +116,7 @@ public class FileService {
                 if (!ftpClient.changeWorkingDirectory(safe(request.path))) {
                     throw new IOException("目录不可用");
                 }
-                FTPFile entry = ftpClient.mlistFile(request.name);
-                if (entry == null) {
-                    entry =
-                            Arrays.stream(ftpClient.listFiles())
-                                    .filter(exception -> exception.getName().equals(request.name))
-                                    .findFirst()
-                                    .orElse(null);
-                }
-                if (entry == null || !entry.isFile()) {
-                    throw new IOException("仅支持普通文件");
-                }
-                if (!ftpClient.deleteFile(request.name)) {
-                    throw new IOException("删除失败");
-                }
+                folders.deleteRemote(ftpClient, request.name);
             }
         }
     }

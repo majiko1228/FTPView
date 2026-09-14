@@ -53,18 +53,35 @@ public class TransferService {
         return List.of("completed", "failed", "cancelled").contains(job.status);
     }
 
+    private final FolderService folders;
     private final FtpSessionService sessions;
     private final FtpConnectionService connections;
 
     /** 传输使用独立连接，避免阻塞目录浏览会话。 */
-    @org.springframework.beans.factory.annotation.Autowired
     public TransferService(FtpSessionService sessions, FtpConnectionService connections) {
-        this(sessions, connections, Executors.newFixedThreadPool(2));
+        this(sessions, connections, new FolderService());
+    }
+
+    /** 注入目录清单服务，文件夹任务包含递归预检和完整性校验。 */
+    @org.springframework.beans.factory.annotation.Autowired
+    public TransferService(
+            FtpSessionService sessions, FtpConnectionService connections, FolderService folders) {
+        this(sessions, connections, Executors.newFixedThreadPool(2), folders);
     }
 
     /** 测试可以注入单线程执行器，生产最多并发两个独立文件。 */
     TransferService(
             FtpSessionService sessions, FtpConnectionService connections, ExecutorService worker) {
+        this(sessions, connections, worker, new FolderService());
+    }
+
+    /** 测试和生产共用任务资源初始化。 */
+    TransferService(
+            FtpSessionService sessions,
+            FtpConnectionService connections,
+            ExecutorService worker,
+            FolderService folders) {
+        this.folders = folders;
         this.worker = worker;
         this.sessions = sessions;
         this.connections = connections;
@@ -211,37 +228,47 @@ public class TransferService {
         byte[] buffer = new byte[262144];
         register(job, in);
         register(job, out);
-        long lastTime = System.nanoTime();
-        long windowBytes = 0;
-        job.bytesPerSecond = 0;
-        int count;
-        while (true) {
-            checkCancelled(job);
-            count = in.read(buffer);
-            if (count == -1) {
-                break;
+        try {
+            long lastTime = System.nanoTime();
+            long windowBytes = 0;
+            job.bytesPerSecond = 0;
+            int count;
+            while (true) {
+                checkCancelled(job);
+                count = in.read(buffer);
+                if (count == -1) {
+                    break;
+                }
+                checkCancelled(job);
+                if (out != null) {
+                    out.write(buffer, 0, count);
+                }
+                hash.update(buffer, 0, count);
+                if ("transferring".equals(job.status)) {
+                    job.bytes += count;
+                } else {
+                    job.verifyBytes += count;
+                }
+                windowBytes += count;
+                long now = System.nanoTime();
+                if (now - lastTime >= 250_000_000L) {
+                    job.bytesPerSecond = (long) (windowBytes * 1_000_000_000.0 / (now - lastTime));
+                    lastTime = now;
+                    windowBytes = 0;
+                }
+                job.updatedAt = System.currentTimeMillis();
             }
             checkCancelled(job);
-            if (out != null) {
-                out.write(buffer, 0, count);
+            return hash.digest();
+        } finally {
+            Control control = controls.get(job.id);
+            if (control != null) {
+                control.streams.remove(in);
+                if (out != null) {
+                    control.streams.remove(out);
+                }
             }
-            hash.update(buffer, 0, count);
-            if ("transferring".equals(job.status)) {
-                job.bytes += count;
-            } else {
-                job.verifyBytes += count;
-            }
-            windowBytes += count;
-            long now = System.nanoTime();
-            if (now - lastTime >= 250_000_000L) {
-                job.bytesPerSecond = (long) (windowBytes * 1_000_000_000.0 / (now - lastTime));
-                lastTime = now;
-                windowBytes = 0;
-            }
-            job.updatedAt = System.currentTimeMillis();
         }
-        checkCancelled(job);
-        return hash.digest();
     }
 
     /** 回读远端文件校验内容，必须消费 FTP 完成响应。 */
@@ -284,9 +311,22 @@ public class TransferService {
             job.status = "transferring";
             job.phase = "传输文件";
             if (request.direction.equals("upload")) {
-                upload(job, request, ftpClient, local);
+                if (Files.isDirectory(local, LinkOption.NOFOLLOW_LINKS)) {
+                    uploadFolder(job, request, ftpClient, local);
+                } else {
+                    upload(job, request, ftpClient, local);
+                }
             } else {
-                download(job, request, ftpClient, local);
+                FTPFile source =
+                        Arrays.stream(ftpClient.listFiles())
+                                .filter(item -> item.getName().equals(request.name))
+                                .findFirst()
+                                .orElseThrow(() -> new IOException("文件不存在"));
+                if (source.isDirectory() && !source.isSymbolicLink()) {
+                    downloadFolder(job, request, ftpClient, local);
+                } else {
+                    download(job, request, ftpClient, local);
+                }
             }
             job.recoveryPath = "";
             job.status = "completed";
@@ -323,8 +363,8 @@ public class TransferService {
         if (!ftpClient.makeDirectory(directory)) {
             throw new IOException("无法创建独立上传目录");
         }
-        job.recoveryPath = request.remotePath + "/" + temporary;
-        job.destination = request.remotePath + "/" + destination;
+        job.recoveryPath = request.remotePath.replaceAll("/+$", "") + "/" + temporary;
+        job.destination = request.remotePath.replaceAll("/+$", "") + "/" + destination;
         OutputStream out = ftpClient.storeFileStream(temporary);
         if (out == null) {
             throw new IOException("无法写入临时文件");
@@ -421,6 +461,167 @@ public class TransferService {
         publishing(job);
         Files.createLink(local, temporary);
         Files.delete(temporary);
+    }
+
+    /** 目录上传聚合总大小，保留隐藏文件和空目录，整个目录校验后再发布。 */
+    private void uploadFolder(
+            TransferJob job, WorkspaceRequest request, FTPClient client, Path local)
+            throws Exception {
+        job.phase = "扫描目录内容";
+        List<FolderService.Item> manifest = folders.localManifest(local, () -> checkCancelled(job));
+        job.size =
+                manifest.stream()
+                        .filter(item -> !item.directory)
+                        .mapToLong(item -> item.size)
+                        .sum();
+        job.verifyTotal = job.size * 2;
+        String container = "FTPView-" + UUID.randomUUID();
+        if (!client.makeDirectory(container)) {
+            throw new IOException("无法创建上传目录");
+        }
+        String temporary = container + "/.part";
+        if (!client.makeDirectory(temporary)) {
+            throw new IOException("无法创建临时目录");
+        }
+        job.destination =
+                request.remotePath.replaceAll("/+$", "") + "/" + container + "/" + request.name;
+        job.recoveryPath = request.remotePath.replaceAll("/+$", "") + "/" + temporary;
+        Map<String, byte[]> hashes = new java.util.HashMap<>();
+        for (FolderService.Item item : manifest) {
+            checkCancelled(job);
+            String destination = temporary + "/" + item.relative;
+            Path source = local.resolve(item.relative);
+            if (item.directory) {
+                if (!client.makeDirectory(destination)) {
+                    throw new IOException("创建子目录失败：" + item.relative);
+                }
+                continue;
+            }
+            if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("源文件类型已变化：" + item.relative);
+            }
+            job.status = "transferring";
+            job.phase = "上传：" + item.relative;
+            long before = job.bytes;
+            OutputStream target = client.storeFileStream(destination);
+            if (target == null) {
+                throw new IOException("无法上传：" + item.relative);
+            }
+            byte[] hash;
+            try (InputStream in = new BufferedInputStream(Files.newInputStream(source), 262144);
+                    OutputStream out = new BufferedOutputStream(target, 262144)) {
+                hash = copy(in, out, job);
+            }
+            if (!client.completePendingCommand() || job.bytes - before != item.size) {
+                throw new IOException("文件传输不完整：" + item.relative);
+            }
+            job.status = "verifying";
+            job.phase = "回读校验：" + item.relative;
+            if (!Arrays.equals(hash, remoteHash(client, destination, job))) {
+                throw new IOException("内容校验失败：" + item.relative);
+            }
+            hashes.put(item.relative, hash);
+        }
+        job.status = "verifying";
+        job.phase = "核对源目录清单";
+        if (!manifest.equals(folders.localManifest(local, () -> checkCancelled(job)))) {
+            throw new IOException("源目录在传输期间发生变化");
+        }
+        for (FolderService.Item item : manifest) {
+            if (item.directory) {
+                continue;
+            }
+            job.phase = "核对本机源文件：" + item.relative;
+            try (InputStream in = Files.newInputStream(local.resolve(item.relative))) {
+                if (!Arrays.equals(hashes.get(item.relative), copy(in, null, job))) {
+                    throw new IOException("源文件已变化：" + item.relative);
+                }
+            }
+        }
+        publishing(job);
+        if (!client.rename(temporary, container + "/" + request.name)) {
+            throw new IOException("发布目录失败");
+        }
+    }
+
+    /** 目录下载写入独立容器，保留目录结构；逐文件校验及清单核对通过后发布。 */
+    private void downloadFolder(
+            TransferJob job, WorkspaceRequest request, FTPClient client, Path local)
+            throws Exception {
+        if (Files.exists(local, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("本机已有同名目录或文件，拒绝覆盖");
+        }
+        job.phase = "扫描远端目录";
+        List<FolderService.Item> manifest =
+                folders.remoteManifest(client, request.name, () -> checkCancelled(job));
+        job.size =
+                manifest.stream()
+                        .filter(item -> !item.directory)
+                        .mapToLong(item -> item.size)
+                        .sum();
+        job.verifyTotal = job.size * 2;
+        Path container = Files.createTempDirectory(local.getParent(), "FTPView-");
+        Path temporary = Files.createDirectory(container.resolve(".part"));
+        job.destination = container.resolve(request.name).toString();
+        job.recoveryPath = temporary.toString();
+        Map<String, byte[]> hashes = new java.util.HashMap<>();
+        for (FolderService.Item item : manifest) {
+            checkCancelled(job);
+            Path target = temporary.resolve(item.relative);
+            if (item.directory) {
+                Files.createDirectory(target);
+                continue;
+            }
+            job.status = "transferring";
+            job.phase = "下载：" + item.relative;
+            long before = job.bytes;
+            InputStream source = client.retrieveFileStream(request.name + "/" + item.relative);
+            if (source == null) {
+                throw new IOException("无法下载：" + item.relative);
+            }
+            byte[] hash;
+            try (InputStream in = source;
+                    OutputStream out =
+                            new BufferedOutputStream(
+                                    Files.newOutputStream(target, StandardOpenOption.CREATE_NEW),
+                                    262144)) {
+                hash = copy(in, out, job);
+            }
+            if (!client.completePendingCommand() || job.bytes - before != item.size) {
+                throw new IOException("下载不完整：" + item.relative);
+            }
+            job.status = "verifying";
+            job.phase = "校验本机内容：" + item.relative;
+            try (InputStream in = Files.newInputStream(target)) {
+                if (!Arrays.equals(hash, copy(in, null, job))) {
+                    throw new IOException("本机内容校验失败：" + item.relative);
+                }
+            }
+            try (java.nio.channels.FileChannel channel =
+                    java.nio.channels.FileChannel.open(target, StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            hashes.put(item.relative, hash);
+        }
+        job.status = "verifying";
+        job.phase = "核对远端目录清单";
+        if (!manifest.equals(
+                folders.remoteManifest(client, request.name, () -> checkCancelled(job)))) {
+            throw new IOException("远端目录在传输期间发生变化");
+        }
+        for (FolderService.Item item : manifest) {
+            if (item.directory) {
+                continue;
+            }
+            job.phase = "回读远端文件：" + item.relative;
+            if (!Arrays.equals(
+                    hashes.get(item.relative),
+                    remoteHash(client, request.name + "/" + item.relative, job))) {
+                throw new IOException("远端内容已变化：" + item.relative);
+            }
+        }
+        publishing(job);
+        Files.move(temporary, container.resolve(request.name));
     }
 
     /** 应用退出时停止任务执行器。 */
