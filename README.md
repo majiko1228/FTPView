@@ -32,3 +32,15 @@ mvn spring-boot:run
 服务限定本机使用，未实现多用户鉴权，勿暴露到公网。Spring Boot 2.7 为兼容 JDK 11 选择，已结束开源常规维护。
 
 测试使用 MockMvc 和模拟 FTP 流，不监听端口；覆盖健康接口、目录隐藏文件、删除保护、下载内容校验、同名拒绝和上传损坏不发布。真实 FTP/FTPS 服务器的权限、编码和网络兼容性仍需联调。
+
+## 分层与代码格式
+
+- `api`：Controller 仅处理路由和服务委派；`ApiExceptionHandler` 统一异常响应。
+- `service/FtpConnectionService`：FTP/FTPS 连接配置及资源释放。
+- `service/FtpSessionService`：浏览会话的创建、查询与销毁。
+- `service/FileService`：本机/远端目录查询和普通文件删除。
+- `service/TransferService`：任务调度、上传、下载和内容校验。
+- `dto`：连接参数、操作请求、文件条目和任务数据。
+- `util/PathValidator`：文件名及远端路径校验。
+
+统一使用四空格缩进、独立语句换行和方法注释。`mvn spotless:apply` 自动格式化 Java 源码；`mvn verify` 会先检查格式，不符合规范则失败。
