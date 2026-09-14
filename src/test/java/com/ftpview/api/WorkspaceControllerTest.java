@@ -20,6 +20,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class WorkspaceControllerTest {
     @Autowired private MockMvc mvc;
     @MockBean private FileService files;
+    @MockBean private com.ftpview.service.EntryCreationService creation;
     @MockBean private FtpSessionService sessions;
     @MockBean private TransferService transfers;
 

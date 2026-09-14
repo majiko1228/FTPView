@@ -20,11 +20,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class WorkspaceController {
     private final FtpSessionService sessions;
     private final FileService files;
+    private final com.ftpview.service.EntryCreationService creation;
     private final TransferService transfers;
 
     /** 控制层仅负责请求委派，业务逻辑由服务层处理。 */
     public WorkspaceController(
-            FtpSessionService sessions, FileService files, TransferService transfers) {
+            FtpSessionService sessions,
+            FileService files,
+            TransferService transfers,
+            com.ftpview.service.EntryCreationService creation) {
+        this.creation = creation;
         this.sessions = sessions;
         this.files = files;
         this.transfers = transfers;
@@ -78,5 +83,26 @@ public class WorkspaceController {
     public TransferJob cancel(@org.springframework.web.bind.annotation.PathVariable String id)
             throws Exception {
         return transfers.cancel(id);
+    }
+
+    /** 在当前目录创建带扩展名的空文件。 */
+    @PostMapping("/entries/file")
+    public com.ftpview.dto.FileEntry createFile(@RequestBody WorkspaceRequest request)
+            throws Exception {
+        return creation.createFile(request);
+    }
+
+    /** 自动分配不重名的文件夹名称。 */
+    @PostMapping("/entries/folder")
+    public com.ftpview.dto.FileEntry createFolder(@RequestBody WorkspaceRequest request)
+            throws Exception {
+        return creation.createFolder(request);
+    }
+
+    /** 保存新建文件夹的行内名称。 */
+    @PostMapping("/entries/folder/rename")
+    public com.ftpview.dto.FileEntry renameFolder(@RequestBody WorkspaceRequest request)
+            throws Exception {
+        return creation.renameFolder(request);
     }
 }
