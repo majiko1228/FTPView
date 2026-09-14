@@ -1,0 +1,6 @@
+server:
+  address: 127.0.0.1
+  port: ${FTPVIEW_PORT:8080}
+spring:
+  application:
+    name: ftpview
