@@ -12,5 +12,10 @@ public class TransferJob {
     public volatile String recoveryPath = "";
     public volatile long bytes;
     public volatile long size;
+    public volatile long verifyBytes;
+    public volatile long verifyTotal;
+    public volatile long bytesPerSecond;
+    public volatile long updatedAt = System.currentTimeMillis();
+    public volatile String phase = "等待开始";
     public long startedAt = System.currentTimeMillis();
 }

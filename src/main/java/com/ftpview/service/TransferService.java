@@ -7,6 +7,9 @@ import com.ftpview.dto.ConnectionConfig;
 import com.ftpview.dto.TransferJob;
 import com.ftpview.dto.WorkspaceRequest;
 import com.ftpview.service.FtpSessionService.Session;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,12 +19,15 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import javax.annotation.PreDestroy;
@@ -32,25 +38,46 @@ import org.springframework.stereotype.Service;
 @Service
 public class TransferService {
     private final Map<String, TransferJob> jobs = new ConcurrentHashMap<>();
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker;
+    private final Map<String, Control> controls = new ConcurrentHashMap<>();
+    private final Map<String, String> activeKeys = new ConcurrentHashMap<>();
+
+    private static class Control {
+        volatile boolean cancelled;
+        volatile FTPClient client;
+        final List<Closeable> streams = new CopyOnWriteArrayList<>();
+    }
+
+    /** 包含校验与取消收尾的任务均占用文件锁。 */
+    private boolean terminal(TransferJob job) {
+        return List.of("completed", "failed", "cancelled").contains(job.status);
+    }
+
     private final FtpSessionService sessions;
     private final FtpConnectionService connections;
 
     /** 传输使用独立连接，避免阻塞目录浏览会话。 */
+    @org.springframework.beans.factory.annotation.Autowired
     public TransferService(FtpSessionService sessions, FtpConnectionService connections) {
+        this(sessions, connections, Executors.newFixedThreadPool(2));
+    }
+
+    /** 测试可以注入单线程执行器，生产最多并发两个独立文件。 */
+    TransferService(
+            FtpSessionService sessions, FtpConnectionService connections, ExecutorService worker) {
+        this.worker = worker;
         this.sessions = sessions;
         this.connections = connections;
     }
 
     /** 判断是否仍有未结束任务，用于写操作保护。 */
     public boolean isTransferring() {
-        return jobs.values().stream()
-                .anyMatch(job -> !List.of("completed", "failed").contains(job.status));
+        return jobs.values().stream().anyMatch(job -> !terminal(job));
     }
 
     /** 返回内存任务快照，供前端独立轮询进度。 */
     public Collection<TransferJob> progress() {
-        return jobs.values();
+        return new ArrayList<>(jobs.values());
     }
 
     /** 单任务传输避免同一客户端重复写入目标。 */
@@ -60,55 +87,172 @@ public class TransferService {
         if (!List.of("upload", "download").contains(request.direction)) {
             throw new IOException("无效方向");
         }
-        long pending =
-                jobs.values().stream()
-                        .filter(job -> !List.of("completed", "failed").contains(job.status))
-                        .count();
+        String key = taskKey(request, session.config);
+        String existing = activeKeys.get(key);
+        if (existing != null) {
+            throw new IOException("该文件已有未完成任务，请等待结束或取消后重试");
+        }
+        long pending = jobs.values().stream().filter(job -> !terminal(job)).count();
         if (pending >= 100) {
             throw new IOException("等待队列已满，请稍后重试");
         }
         if (jobs.size() >= 200) {
-            jobs.entrySet()
-                    .removeIf(
-                            entry ->
-                                    List.of("completed", "failed")
-                                            .contains(entry.getValue().status));
+            jobs.entrySet().removeIf(entry -> terminal(entry.getValue()));
         }
         TransferJob job = new TransferJob();
         job.status = "queued";
         job.name = request.name;
         job.direction = request.direction;
         jobs.put(job.id, job);
-        worker.submit(() -> transfer(job, request, session.config));
+        activeKeys.put(key, job.id);
+        controls.put(job.id, new Control());
+        worker.submit(
+                () -> {
+                    try {
+                        if (!"cancelled".equals(job.status)) {
+                            transfer(job, request, session.config);
+                        }
+                    } finally {
+                        activeKeys.remove(key, job.id);
+                        controls.remove(job.id);
+                    }
+                });
         return job;
+    }
+
+    /** 同一服务器、账号、方向和源/目标路径的任务只接受一次，不依赖会话 ID。 */
+    private String taskKey(WorkspaceRequest request, ConnectionConfig config) throws IOException {
+        safe(request.remotePath);
+        Path localDirectory = Paths.get(request.localPath).toRealPath();
+        String remote = Paths.get(request.remotePath).normalize().toString();
+        return String.join(
+                "\u0000",
+                config.host.toLowerCase(java.util.Locale.ROOT),
+                String.valueOf(config.port),
+                config.user,
+                config.protocol,
+                request.direction,
+                localDirectory.resolve(request.name).toString(),
+                remote,
+                request.name);
+    }
+
+    /** 取消排队任务，或关闭运行任务的数据流；发布阶段不可打断。 */
+    public TransferJob cancel(String id) throws IOException {
+        TransferJob job = jobs.get(id);
+        if (job == null) {
+            throw new IOException("任务不存在");
+        }
+        synchronized (job) {
+            if (terminal(job)) {
+                return job;
+            }
+            if ("publishing".equals(job.status)) {
+                throw new IOException("文件已校验完毕，正在发布，请等待完成");
+            }
+            Control control = controls.get(id);
+            if (control == null) {
+                throw new IOException("任务正在结束，请稍后刷新");
+            }
+            control.cancelled = true;
+            boolean queued = "queued".equals(job.status);
+            job.status = queued ? "cancelled" : "cancelling";
+            job.phase = queued ? "已取消" : "正在关闭连接";
+            job.bytesPerSecond = 0;
+            if (queued) {
+                activeKeys.entrySet().removeIf(entry -> entry.getValue().equals(id));
+            }
+            for (Closeable stream : control.streams) {
+                try {
+                    stream.close();
+                } catch (IOException ignored) {
+                }
+            }
+            if (control.client != null) {
+                connections.close(control.client);
+            }
+            return job;
+        }
+    }
+
+    /** 在每次读写及阶段切换前确认取消请求，防止取消后继续发布。 */
+    private void checkCancelled(TransferJob job) {
+        Control control = controls.get(job.id);
+        if (control != null && control.cancelled) {
+            throw new CancellationException("任务已取消，源文件未删除");
+        }
+    }
+
+    /** 对取消操作暴露当前数据流，连接中断无需等待完整文件读取。 */
+    private void register(TransferJob job, Closeable stream) throws IOException {
+        Control control = controls.get(job.id);
+        if (control != null && stream != null) {
+            control.streams.add(stream);
+            if (control.cancelled) {
+                stream.close();
+                checkCancelled(job);
+            }
+        }
+    }
+
+    /** 仅在全部校验通过后进入不可取消的短暂发布阶段。 */
+    private void publishing(TransferJob job) {
+        synchronized (job) {
+            checkCancelled(job);
+            job.status = "publishing";
+            job.phase = "校验通过，正在保存";
+            job.bytesPerSecond = 0;
+        }
     }
 
     /** 计算 SHA-256，可同时记录传输字节；流由调用者关闭。 */
     private byte[] copy(InputStream in, OutputStream out, TransferJob job) throws Exception {
         MessageDigest hash = MessageDigest.getInstance("SHA-256");
-        byte[] buffer = new byte[65536];
+        byte[] buffer = new byte[262144];
+        register(job, in);
+        register(job, out);
+        long lastTime = System.nanoTime();
+        long windowBytes = 0;
+        job.bytesPerSecond = 0;
         int count;
-        while ((count = in.read(buffer)) != -1) {
+        while (true) {
+            checkCancelled(job);
+            count = in.read(buffer);
+            if (count == -1) {
+                break;
+            }
+            checkCancelled(job);
             if (out != null) {
                 out.write(buffer, 0, count);
             }
             hash.update(buffer, 0, count);
-            if (job != null) {
+            if ("transferring".equals(job.status)) {
                 job.bytes += count;
+            } else {
+                job.verifyBytes += count;
             }
+            windowBytes += count;
+            long now = System.nanoTime();
+            if (now - lastTime >= 250_000_000L) {
+                job.bytesPerSecond = (long) (windowBytes * 1_000_000_000.0 / (now - lastTime));
+                lastTime = now;
+                windowBytes = 0;
+            }
+            job.updatedAt = System.currentTimeMillis();
         }
+        checkCancelled(job);
         return hash.digest();
     }
 
     /** 回读远端文件校验内容，必须消费 FTP 完成响应。 */
-    private byte[] remoteHash(FTPClient ftpClient, String path) throws Exception {
+    private byte[] remoteHash(FTPClient ftpClient, String path, TransferJob job) throws Exception {
         InputStream in = ftpClient.retrieveFileStream(path);
         if (in == null) {
             throw new IOException("无法回读校验");
         }
         byte[] hash;
         try (InputStream stream = in) {
-            hash = copy(stream, null, null);
+            hash = copy(stream, null, job);
         }
         if (!ftpClient.completePendingCommand()) {
             throw new IOException("回读未完成");
@@ -118,17 +262,27 @@ public class TransferService {
 
     /** 临时写入与哈希校验成功后发布，不删除源文件，不覆盖同名目标。 */
     void transfer(TransferJob job, WorkspaceRequest request, ConnectionConfig config) {
-        job.status = "connecting";
         FTPClient ftpClient = null;
         try {
+            synchronized (job) {
+                checkCancelled(job);
+                job.status = "connecting";
+                job.phase = "建立 FTP 连接";
+            }
             name(request.name);
             safe(request.name);
             ftpClient = connections.connect(config);
+            Control control = controls.get(job.id);
+            if (control != null) {
+                control.client = ftpClient;
+            }
+            checkCancelled(job);
             if (!ftpClient.changeWorkingDirectory(safe(request.remotePath))) {
                 throw new IOException("远端目录不可用");
             }
             Path local = Paths.get(request.localPath).resolve(request.name);
             job.status = "transferring";
+            job.phase = "传输文件";
             if (request.direction.equals("upload")) {
                 upload(job, request, ftpClient, local);
             } else {
@@ -141,8 +295,13 @@ public class TransferService {
                     exception.getMessage() == null
                             ? exception.getClass().getSimpleName()
                             : exception.getMessage();
-            job.status = "failed";
+            Control control = controls.get(job.id);
+            job.status = control != null && control.cancelled ? "cancelled" : "failed";
+            if ("cancelled".equals(job.status)) {
+                job.error = "已取消，源文件保留，临时文件可能保留";
+            }
         } finally {
+            job.bytesPerSecond = 0;
             if (ftpClient != null) {
                 connections.close(ftpClient);
             }
@@ -171,20 +330,26 @@ public class TransferService {
             throw new IOException("无法写入临时文件");
         }
         byte[] original;
-        try (InputStream in = Files.newInputStream(local);
-                OutputStream stream = out) {
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(local), 262144);
+                OutputStream stream = new BufferedOutputStream(out, 262144)) {
             original = copy(in, stream, job);
         }
         if (!ftpClient.completePendingCommand()) {
             throw new IOException("上传未完成");
         }
+        checkCancelled(job);
         job.status = "verifying";
-        if (job.bytes != job.size || !Arrays.equals(original, remoteHash(ftpClient, temporary))) {
+        job.verifyTotal = job.size * 2;
+        job.bytesPerSecond = 0;
+        job.phase = "回读远端 SHA-256 校验";
+        if (job.bytes != job.size
+                || !Arrays.equals(original, remoteHash(ftpClient, temporary, job))) {
             throw new IOException("内容校验失败");
         }
+        job.phase = "检查本机源文件变化";
         byte[] current;
-        try (InputStream in = Files.newInputStream(local)) {
-            current = copy(in, null, null);
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(local), 262144)) {
+            current = copy(in, null, job);
         }
         if (Files.size(local) != job.size
                 || Files.getLastModifiedTime(local).toMillis() != modified
@@ -195,6 +360,7 @@ public class TransferService {
                 .anyMatch(entry -> entry.getName().equals(request.name))) {
             throw new IOException("目标已存在");
         }
+        publishing(job);
         if (!ftpClient.rename(temporary, destination)) {
             throw new IOException("发布文件失败");
         }
@@ -226,26 +392,33 @@ public class TransferService {
         }
         byte[] original;
         try (InputStream stream = in;
-                OutputStream out = Files.newOutputStream(temporary)) {
+                OutputStream out =
+                        new BufferedOutputStream(Files.newOutputStream(temporary), 262144)) {
             original = copy(stream, out, job);
         }
         if (!ftpClient.completePendingCommand()) {
             throw new IOException("下载未完成");
         }
+        checkCancelled(job);
         job.status = "verifying";
+        job.verifyTotal = job.size * 2;
+        job.bytesPerSecond = 0;
+        job.phase = "校验本机临时文件";
         byte[] disk;
         try (InputStream stored = Files.newInputStream(temporary)) {
-            disk = copy(stored, null, null);
+            disk = copy(stored, null, job);
         }
+        job.phase = "回读远端 SHA-256 校验";
         if (job.bytes != job.size
                 || !Arrays.equals(original, disk)
-                || !Arrays.equals(original, remoteHash(ftpClient, request.name))) {
+                || !Arrays.equals(original, remoteHash(ftpClient, request.name, job))) {
             throw new IOException("内容校验失败");
         }
         try (java.nio.channels.FileChannel channel =
                 java.nio.channels.FileChannel.open(temporary, StandardOpenOption.WRITE)) {
             channel.force(true);
         }
+        publishing(job);
         Files.createLink(local, temporary);
         Files.delete(temporary);
     }
@@ -253,6 +426,12 @@ public class TransferService {
     /** 应用退出时停止任务执行器。 */
     @PreDestroy
     public void shutdown() {
+        for (String id : jobs.keySet()) {
+            try {
+                cancel(id);
+            } catch (IOException ignored) {
+            }
+        }
         worker.shutdownNow();
     }
 }

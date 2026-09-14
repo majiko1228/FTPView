@@ -17,12 +17,15 @@ class TransferQueueTest {
     void serializesMultipleFiles() throws Exception {
         FtpSessionService sessions = mock(FtpSessionService.class);
         when(sessions.session("test"))
-                .thenReturn(new FtpSessionService.Session(new ConnectionConfig(), new FTPClient()));
+                .thenReturn(new FtpSessionService.Session(config(), new FTPClient()));
         CountDownLatch firstStarted = new CountDownLatch(1),
                 release = new CountDownLatch(1),
                 secondStarted = new CountDownLatch(1);
         TransferService service =
-                new TransferService(sessions, mock(FtpConnectionService.class)) {
+                new TransferService(
+                        sessions,
+                        mock(FtpConnectionService.class),
+                        java.util.concurrent.Executors.newSingleThreadExecutor()) {
                     /** 用可控任务隔离队列调度验证，不访问 FTP 服务器。 */
                     @Override
                     void transfer(
@@ -46,12 +49,16 @@ class TransferQueueTest {
             first.session = "test";
             first.direction = "upload";
             first.name = "one.txt";
+            first.localPath = System.getProperty("java.io.tmpdir");
+            first.remotePath = "/";
             service.submit(first);
             assertTrue(firstStarted.await(2, TimeUnit.SECONDS));
             WorkspaceRequest second = new WorkspaceRequest();
             second.session = "test";
             second.direction = "upload";
             second.name = "two.txt";
+            second.localPath = first.localPath;
+            second.remotePath = "/";
             TransferJob queued = service.submit(second);
             assertEquals("queued", queued.status);
             assertEquals(1, secondStarted.getCount());
@@ -61,5 +68,12 @@ class TransferQueueTest {
             release.countDown();
             service.shutdown();
         }
+    }
+
+    /** 提供合法的连接标识供任务去重测试使用。 */
+    private ConnectionConfig config() {
+        ConnectionConfig c = new ConnectionConfig();
+        c.host = "localhost";
+        return c;
     }
 }

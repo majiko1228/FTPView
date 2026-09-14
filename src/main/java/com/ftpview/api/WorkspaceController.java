@@ -72,4 +72,11 @@ public class WorkspaceController {
     public TransferJob submit(@RequestBody WorkspaceRequest request) throws Exception {
         return transfers.submit(request);
     }
+
+    /** 请求取消排队、传输或校验中的任务。 */
+    @PostMapping("/transfers/{id}/cancel")
+    public TransferJob cancel(@org.springframework.web.bind.annotation.PathVariable String id)
+            throws Exception {
+        return transfers.cancel(id);
+    }
 }
