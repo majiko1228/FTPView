@@ -1,32 +1,34 @@
 # FTPView
 
-FTPView 的独立 Java 后端，前端仓库：https://github.com/majiko1228/FTPView-Web
-
-## 环境
-
-- JDK 11
-- Maven 3.6.3 或更新版本
-- Spring Boot 2.7.18（兼容 JDK 11，已结束开源常规维护）
-- Apache Commons Net 3.11.1（预留 FTP/FTPS 实现依赖）
-
-## 开发
+JDK 11 + Spring Boot 2.7.18 + Apache Commons Net 后端。
+前端：[FTPView-Web](https://github.com/majiko1228/FTPView-Web)。
 
 ```sh
 mvn clean verify
 mvn spring-boot:run
 ```
 
-默认监听 `127.0.0.1:8080`，可通过 `FTPVIEW_PORT` 环境变量修改端口。
-健康接口：`GET http://127.0.0.1:8080/api/health`
+默认 `127.0.0.1:5172`，环境变量 `FTPVIEW_PORT` 可修改。前端默认使用 5173。
+打包启动：`java -jar target/ftpview-0.1.0-SNAPSHOT.jar`。
 
-```json
-{"status":"UP","service":"FTPView"}
-```
+## 接口
 
-打包后运行：`java -jar target/ftpview-0.1.0-SNAPSHOT.jar`。
+- GET /api/health：健康检查
+- GET /api/local/list?path=：本机目录
+- POST /api/connect：创建 FTP 浏览会话
+- POST /api/disconnect：断开会话
+- POST /api/remote/list：读取远端目录
+- POST /api/delete：删除普通文件
+- POST /api/transfers：提交单文件复制任务
+- GET /api/transfers：任务状态与字节进度
 
-## 初始化范围
+连接参数：host、port、user、password、protocol、encoding、ignoreCertificate。
+目录参数：session、path。传输参数：session、name、direction(upload/download)、localPath、remotePath。
 
-当前仅建立工程、配置、健康接口与 MockMvc 测试，测试不监听网络端口。
-FTP 会话、目录浏览、传输与校验后续迁移。前端现有 Node.js 后端暂时保留，8080 端口不会与它的 3001 冲突。
-默认分支：`dev`。
+浏览操作复用串行 FTP 会话，传输使用独立连接。FTP 会话失效时请重新连接。
+传输保持源文件，先临时写入，再进行 SHA-256 内容校验。上传创建独立目录；下载硬链接发布，禁止覆盖已有文件，文件系统不支持硬链接则失败。
+
+当前不支持目录传输、取消、断点续传和任务持久化。请勿在传输期间关闭服务或修改源文件。失败时可能留下临时文件，进度接口提供位置。回读校验增加网络流量；不是存储设备故障或远端并发修改的绝对保证。
+服务限定本机使用，未实现多用户鉴权，勿暴露到公网。Spring Boot 2.7 为兼容 JDK 11 选择，已结束开源常规维护。
+
+测试使用 MockMvc 和模拟 FTP 流，不监听端口；覆盖健康接口、目录隐藏文件、删除保护、下载内容校验、同名拒绝和上传损坏不发布。真实 FTP/FTPS 服务器的权限、编码和网络兼容性仍需联调。
