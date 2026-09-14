@@ -29,17 +29,33 @@ class WorkspaceControllerTest {
         when(files.local("/tmp")).thenReturn(Map.of("path", "/tmp", "files", List.of()));
         mvc.perform(get("/api/local/list").param("path", "/tmp"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.path").value("/tmp"))
-                .andExpect(jsonPath("$.files").isArray());
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.msg").value("操作成功"))
+                .andExpect(jsonPath("$.data.path").value("/tmp"))
+                .andExpect(jsonPath("$.data.files").isArray());
         verify(files).local("/tmp");
     }
 
-    /** 验证抽离异常处理后，前端仍收到 error 字段和失败状态码。 */
+    /** 验证抽离异常处理后，前端仍收到 code/data/msg 字段和失败状态码。 */
     @Test
     void preservesErrorContract() throws Exception {
         when(files.local("/missing")).thenThrow(new IOException("目录不存在"));
         mvc.perform(get("/api/local/list").param("path", "/missing"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("目录不存在"));
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.msg").value("目录不存在"));
+    }
+
+    /** 无响应体的删除接口也必须返回统一结构，便于批量客户端确认结果。 */
+    @Test
+    void wrapsEmptyDeleteResponse() throws Exception {
+        mvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+                                        "/api/delete")
+                                .contentType("application/json")
+                                .content("{\"path\":\"/tmp\",\"name\":\"test.txt\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.msg").value("操作成功"));
     }
 }

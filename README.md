@@ -44,3 +44,5 @@ mvn spring-boot:run
 - `util/PathValidator`：文件名及远端路径校验。
 
 统一使用四空格缩进、独立语句换行和方法注释。`mvn spotless:apply` 自动格式化 Java 源码；`mvn verify` 会先检查格式，不符合规范则失败。
+
+接口统一返回 `{code,data,msg}`：成功 `code=0`，失败返回非零业务码和对应 HTTP 错误状态。批量操作使用单文件接口逐项提交；传输后端单线程排队执行（最多 100 个未完成任务），单文件失败不阻塞其他任务。

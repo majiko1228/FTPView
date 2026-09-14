@@ -19,7 +19,7 @@ class HealthControllerTest {
     void healthReportsAvailableService() throws Exception {
         mvc.perform(get("/api/health"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("UP"))
-                .andExpect(jsonPath("$.service").value("FTPView"));
+                .andExpect(jsonPath("$.data.status").value("UP"))
+                .andExpect(jsonPath("$.data.service").value("FTPView"));
     }
 }

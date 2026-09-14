@@ -60,14 +60,22 @@ public class TransferService {
         if (!List.of("upload", "download").contains(request.direction)) {
             throw new IOException("无效方向");
         }
-        if (jobs.values().stream()
-                .anyMatch(job -> !List.of("completed", "failed").contains(job.status))) {
-            throw new IOException("已有任务正在传输");
+        long pending =
+                jobs.values().stream()
+                        .filter(job -> !List.of("completed", "failed").contains(job.status))
+                        .count();
+        if (pending >= 100) {
+            throw new IOException("等待队列已满，请稍后重试");
         }
-        if (jobs.size() > 100) {
-            jobs.clear();
+        if (jobs.size() >= 200) {
+            jobs.entrySet()
+                    .removeIf(
+                            entry ->
+                                    List.of("completed", "failed")
+                                            .contains(entry.getValue().status));
         }
         TransferJob job = new TransferJob();
+        job.status = "queued";
         job.name = request.name;
         job.direction = request.direction;
         jobs.put(job.id, job);
@@ -110,6 +118,7 @@ public class TransferService {
 
     /** 临时写入与哈希校验成功后发布，不删除源文件，不覆盖同名目标。 */
     void transfer(TransferJob job, WorkspaceRequest request, ConnectionConfig config) {
+        job.status = "connecting";
         FTPClient ftpClient = null;
         try {
             name(request.name);
