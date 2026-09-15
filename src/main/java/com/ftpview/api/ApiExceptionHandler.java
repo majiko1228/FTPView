@@ -1,6 +1,6 @@
 package com.ftpview.api;
 
-import com.ftpview.dto.ApiResponse;
+import com.ftpview.common.ApiResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;

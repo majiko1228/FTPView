@@ -1,6 +1,6 @@
 package com.ftpview.api;
 
-import com.ftpview.dto.ApiResponse;
+import com.ftpview.common.ApiResponse;
 import org.springframework.core.MethodParameter;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;

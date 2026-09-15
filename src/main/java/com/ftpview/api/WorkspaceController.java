@@ -1,8 +1,8 @@
 package com.ftpview.api;
 
-import com.ftpview.dto.ConnectionConfig;
-import com.ftpview.dto.TransferJob;
-import com.ftpview.dto.WorkspaceRequest;
+import com.ftpview.entity.ConnectionConfig;
+import com.ftpview.entity.TransferJob;
+import com.ftpview.entity.WorkspaceRequest;
 import com.ftpview.service.FileService;
 import com.ftpview.service.FtpSessionService;
 import com.ftpview.service.TransferService;
@@ -87,21 +87,21 @@ public class WorkspaceController {
 
     /** 在当前目录创建带扩展名的空文件。 */
     @PostMapping("/entries/file")
-    public com.ftpview.dto.FileEntry createFile(@RequestBody WorkspaceRequest request)
+    public com.ftpview.entity.FileEntry createFile(@RequestBody WorkspaceRequest request)
             throws Exception {
         return creation.createFile(request);
     }
 
     /** 自动分配不重名的文件夹名称。 */
     @PostMapping("/entries/folder")
-    public com.ftpview.dto.FileEntry createFolder(@RequestBody WorkspaceRequest request)
+    public com.ftpview.entity.FileEntry createFolder(@RequestBody WorkspaceRequest request)
             throws Exception {
         return creation.createFolder(request);
     }
 
     /** 保存新建文件夹的行内名称。 */
     @PostMapping("/entries/folder/rename")
-    public com.ftpview.dto.FileEntry renameFolder(@RequestBody WorkspaceRequest request)
+    public com.ftpview.entity.FileEntry renameFolder(@RequestBody WorkspaceRequest request)
             throws Exception {
         return creation.renameFolder(request);
     }

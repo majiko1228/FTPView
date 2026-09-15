@@ -3,7 +3,7 @@ package com.ftpview.service;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import com.ftpview.dto.*;
+import com.ftpview.entity.*;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;

@@ -1,4 +1,4 @@
-package com.ftpview.dto;
+package com.ftpview.entity;
 
 import java.util.UUID;
 

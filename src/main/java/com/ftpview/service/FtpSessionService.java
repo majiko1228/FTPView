@@ -1,7 +1,7 @@
 package com.ftpview.service;
 
-import com.ftpview.dto.ConnectionConfig;
-import com.ftpview.dto.WorkspaceRequest;
+import com.ftpview.entity.ConnectionConfig;
+import com.ftpview.entity.WorkspaceRequest;
 import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;

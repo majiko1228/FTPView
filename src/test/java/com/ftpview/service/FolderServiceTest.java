@@ -3,10 +3,9 @@ package com.ftpview.service;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import com.ftpview.dto.*;
+import com.ftpview.entity.*;
 import java.io.*;
 import java.nio.file.*;
-import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.*;
 import org.apache.commons.net.ftp.*;

@@ -3,8 +3,8 @@ package com.ftpview.service;
 import static com.ftpview.util.PathValidator.name;
 import static com.ftpview.util.PathValidator.safe;
 
-import com.ftpview.dto.FileEntry;
-import com.ftpview.dto.WorkspaceRequest;
+import com.ftpview.entity.FileEntry;
+import com.ftpview.entity.WorkspaceRequest;
 import com.ftpview.service.FtpSessionService.Session;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;

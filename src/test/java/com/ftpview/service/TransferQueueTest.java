@@ -3,9 +3,9 @@ package com.ftpview.service;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-import com.ftpview.dto.ConnectionConfig;
-import com.ftpview.dto.TransferJob;
-import com.ftpview.dto.WorkspaceRequest;
+import com.ftpview.entity.ConnectionConfig;
+import com.ftpview.entity.TransferJob;
+import com.ftpview.entity.WorkspaceRequest;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.apache.commons.net.ftp.FTPClient;

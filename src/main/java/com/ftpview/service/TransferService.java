@@ -3,9 +3,9 @@ package com.ftpview.service;
 import static com.ftpview.util.PathValidator.name;
 import static com.ftpview.util.PathValidator.safe;
 
-import com.ftpview.dto.ConnectionConfig;
-import com.ftpview.dto.TransferJob;
-import com.ftpview.dto.WorkspaceRequest;
+import com.ftpview.entity.ConnectionConfig;
+import com.ftpview.entity.TransferJob;
+import com.ftpview.entity.WorkspaceRequest;
 import com.ftpview.service.FtpSessionService.Session;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;

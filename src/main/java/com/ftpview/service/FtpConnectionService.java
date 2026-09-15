@@ -1,6 +1,6 @@
 package com.ftpview.service;
 
-import com.ftpview.dto.ConnectionConfig;
+import com.ftpview.entity.ConnectionConfig;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;

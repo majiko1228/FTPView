@@ -1,4 +1,4 @@
-package com.ftpview.dto;
+package com.ftpview.common;
 
 public class ApiResponse<T> {
     public final int code;
